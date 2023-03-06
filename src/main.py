@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import json
+import math
+import time
 from typing import NamedTuple, List
 
+import moderngl
 import numpy as np
 import tinyobjloader
-import moderngl
-import math
+from matplotlib import pyplot as plt
+from pyrr import Vector3
+
 import luisa
+from camera import Camera
 from luisa import RandomSampler
 from luisa.mathtypes import *
-from matplotlib import pyplot as plt
-from camera import Camera
-from pyrr import Vector3
-import math
 
 accel: luisa.Accel = None
 vertex_buffer: luisa.Buffer = None
@@ -26,8 +27,39 @@ DeviceDirectionLight = luisa.StructType(direction=float3, emission=float3)
 DevicePointLight = luisa.StructType(position=float3, emission=float3)
 DeviceSurfaceLight = luisa.StructType(emission=float3)
 
-dmfp = make_float3(0.1, 0.2, 0.1)
+
+def calculate_parameters(sigma_a: float3, sigma_s: float3, g: float, eta: float):
+    sigma_s_prime = sigma_s * (1.0 - g)
+    sigma_t_prime = sigma_s_prime + sigma_a
+    alpha_prime = sigma_s_prime / sigma_t_prime
+    fresnel = -1.440 / (eta * eta) + 0.710 / eta + 0.668 + 0.0636 * eta
+    a = (1.0 + fresnel) / (1.0 - fresnel)
+    albedo = 0.5 * alpha_prime * (1.0 + make_float3(
+        math.exp(-4.0 / 3.0 * a * math.sqrt(3.0 * (1.0 - alpha_prime.x))),
+        math.exp(-4.0 / 3.0 * a * math.sqrt(3.0 * (1.0 - alpha_prime.y))),
+        math.exp(-4.0 / 3.0 * a * math.sqrt(3.0 * (1.0 - alpha_prime.z)))
+    )) * make_float3(
+        math.exp(-math.sqrt(3.0 * (1.0 - alpha_prime.x))),
+        math.exp(-math.sqrt(3.0 * (1.0 - alpha_prime.y))),
+        math.exp(-math.sqrt(3.0 * (1.0 - alpha_prime.z)))
+    )
+    sigma_tr = make_float3(
+        math.sqrt(3.0 * (1.0 - alpha_prime.x)),
+        math.sqrt(3.0 * (1.0 - alpha_prime.y)),
+        math.sqrt(3.0 * (1.0 - alpha_prime.z))
+    ) * sigma_t_prime
+    dmfp = 1.0 / ((3.5 + 100 * make_float3(
+        (albedo.x - 0.33) ** 4,
+        (albedo.y - 0.33) ** 4,
+        (albedo.z - 0.33) ** 4
+    )) * sigma_tr)
+    return dmfp, albedo
+
+
+dmfp = make_float3(0.1)
+albedo = make_float3(1.0)
 ctx: moderngl.Context = None
+
 
 class RenderModel(NamedTuple):
     vertex_buffer: luisa.Buffer
@@ -43,6 +75,7 @@ class RenderModel(NamedTuple):
             print(f"Warning: Error occurred when parsing file '{filename}'")
             exit(-1)
         attrib = reader.GetAttrib()
+        print(f"Rendering model with {len(attrib.vertices) // 3} vertices.")
         vertex_buffer = luisa.Buffer.empty(len(attrib.vertices) // 3, dtype=float4)
         normal_buffer = luisa.Buffer.empty(vertex_buffer.size, dtype=float4)
         vertex_buffer.copy_from_array(np.hstack(
@@ -123,9 +156,12 @@ class Scene(NamedTuple):
 
 
 def parse_scene(filename: str) -> Scene:
-    global vertex_buffer, normal_buffer, triangle_buffer
+    global vertex_buffer, normal_buffer, triangle_buffer, dmfp, albedo
     with open(filename, 'r') as file:
         scene_data = json.load(file)
+        dmfp, albedo = calculate_parameters(make_float3(*scene_data["sigma_a"]), make_float3(*scene_data["sigma_s"]),
+                                            scene_data["g"],
+                                            scene_data["eta"])
         render_model = RenderModel.from_file(scene_data["render_model"])
         vertex_buffer = render_model.vertex_buffer
         normal_buffer = render_model.normal_buffer
@@ -224,7 +260,7 @@ def influx_kernel(influx, point_light_count, direction_light_count, spp):
         else:
             surface_light = surface_light_buffer.read(hit.inst - 1)
             surface_acc += surface_light.emission
-    influx.write(idx, acc + surface_acc * (400 / (spp * math.pi)))
+    influx.write(idx, (acc + surface_acc * (40 / (spp * math.pi))) * albedo)
 
 
 def collect_vertex_influx(scene: Scene) -> luisa.Buffer:
@@ -264,11 +300,6 @@ def calculate_vertex_efflux(influx):
 def main():
     global ctx
     ctx = moderngl.create_standalone_context()
-    luisa.init()
-    scene = parse_scene("scene.json")
-    upload_scene(scene)
-    influx = collect_vertex_influx(scene)
-    efflux = calculate_vertex_efflux(influx)
     res = (800, 800)
     camera = Camera(Vector3([0.0, 1.0, 8.0]), Vector3([0.0, 0.5, 0.0]), res, 20.0)
     shader = ctx.program(
@@ -301,6 +332,14 @@ def main():
             }
         """
     )
+    luisa.init()
+    scene = parse_scene("scene.json")
+    upload_scene(scene)
+
+    influx = collect_vertex_influx(scene)
+    start = time.time()
+    efflux = calculate_vertex_efflux(influx)
+    print(f"Rendering 1 frame took: {(time.time() - start) * 1000} ms.")
     efflux_buffer_object = ctx.buffer(
         np.array([
             [flux.x, flux.y, flux.z] for flux in efflux.to_list()

@@ -1,41 +1,19 @@
 {
-    "render_model": "./resources/objects/bunny.obj",
-    "direction_lights": [
-        {
-            "direction": [
-                0.0,
-                -1.0,
-                0.0
-            ],
-            "emission": [
-                0.4,
-                0.4,
-                0.4
-            ]
-        }
-    ],
-    "point_lights": [
-        {
-            "position": [
-                1.0,
-                1.0,
-                1.0
-            ],
-            "emission": [
-                0.3,
-                0.3,
-                0.3
-            ]
-        }
-    ],
+    "render_model": "./resources/objects/4.obj",
+    "direction_lights": [],
+    "point_lights": [],
     "surface_lights": [
         {
-            "model": "./resources/lights/a1.obj",
+            "model": "./resources/lights/l4.obj",
             "emission": [
-                1.0,
-                1.0,
-                1.0
+                77,
+                81,
+                87
             ]
         }
-    ]
+    ],
+    "sigma_a": [0.06545, 0.67638, 0.07608],
+    "sigma_s": [1.12, 12.5412, 0.33693],
+    "g": 0.0,
+    "eta": 1.3
 }
