@@ -10,11 +10,12 @@ import numpy as np
 import tinyobjloader
 from matplotlib import pyplot as plt
 from pyrr import Vector3
-
+import sys
 import luisa
 from camera import Camera
 from luisa import RandomSampler
 from luisa.mathtypes import *
+import OpenGL.GL as gl
 
 accel: luisa.Accel = None
 vertex_buffer: luisa.Buffer = None
@@ -333,9 +334,9 @@ def main():
         """
     )
     luisa.init()
-    scene = parse_scene("scene.json")
+    filename = sys.argv[1]
+    scene = parse_scene(filename)
     upload_scene(scene)
-
     influx = collect_vertex_influx(scene)
     start = time.time()
     efflux = calculate_vertex_efflux(influx)
@@ -354,15 +355,20 @@ def main():
         index_buffer=scene.render_model.index_buffer_object
     )
     shader['mvp'].write(camera.mvp)
-    render_target = ctx.texture(res, 4, dtype='f4')
-    fbo = ctx.framebuffer(color_attachments=[render_target], depth_attachment=ctx.depth_texture(res))
-    with ctx.scope(fbo, moderngl.DEPTH_TEST):
-        fbo.clear(alpha=1.0)
+    render_target_msaa = ctx.texture(res, 4, samples=4, dtype='f4')
+    fbo_msaa = ctx.framebuffer(color_attachments=[render_target_msaa], depth_attachment=ctx.depth_renderbuffer(res, samples=4))
+    with ctx.scope(fbo_msaa, moderngl.DEPTH_TEST):
+        fbo_msaa.clear(alpha=1.0)
         vao.render()
-    fbo.release()
+    render_target = ctx.texture(res, 4, dtype='f4')
+    fbo = ctx.framebuffer(color_attachments=[render_target])
+    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, fbo_msaa.glo)
+    gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, fbo.glo)
+    gl.glBlitFramebuffer(0, 0, res[0], res[1], 0, 0, res[0], res[1], gl.GL_COLOR_BUFFER_BIT, gl.GL_LINEAR)
     buffer = bytearray(res[0] * res[1] * 4 * 4)
     render_target.read_into(buffer)
-    plt.imsave("result.png", np.frombuffer(buffer, dtype=np.float32).reshape(res + (-1,))[::-1, ::-1])
+    postfix = filename.split('/')[-1].split('\\')[-1].split('.')[0]
+    plt.imsave(f"result-{postfix}.png", np.frombuffer(buffer, dtype=np.float32).reshape(res + (-1,))[::-1, ::-1])
 
 
 if __name__ == "__main__":
