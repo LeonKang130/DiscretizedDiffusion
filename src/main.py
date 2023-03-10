@@ -27,6 +27,9 @@ direction_light_buffer: luisa.Buffer = None
 DeviceDirectionLight = luisa.StructType(direction=float3, emission=float3)
 DevicePointLight = luisa.StructType(position=float3, emission=float3)
 DeviceSurfaceLight = luisa.StructType(emission=float3)
+light_area = 0.0
+light_normal = make_float3(0.0, -1.0, 0.0)
+amplifier = 6.218
 
 
 def calculate_parameters(sigma_a: float3, sigma_s: float3, g: float, eta: float):
@@ -86,6 +89,7 @@ class RenderModel(NamedTuple):
             )
         ).astype(np.float32))
         normal_vectors = np.array(attrib.normals, dtype=np.float32).reshape(-1, 3)
+        normal_vectors /= np.linalg.norm(normal_vectors, axis=1).reshape((-1, 1))
         normal_arr = np.empty_like(vertex_arr, dtype=np.float32)
         for shape in reader.GetShapes():
             for index in shape.mesh.indices:
@@ -118,6 +122,7 @@ class SurfaceLight(NamedTuple):
 
     @staticmethod
     def from_file(filename: str, emission: float3 = make_float3(0.0)) -> SurfaceLight:
+        global light_area, light_normal
         reader = tinyobjloader.ObjReader()
         if not reader.ParseFromFile(filename):
             print(f"Warning: Error occurred when parsing file '{filename}'")
@@ -136,6 +141,10 @@ class SurfaceLight(NamedTuple):
         ], dtype=np.int32)
         triangle_buffer = luisa.Buffer.empty(len(triangle_arr), dtype=int)
         triangle_buffer.copy_from_array(triangle_arr)
+        light_area = float(np.linalg.norm(np.cross(vertex_arr[triangle_arr[1]] - vertex_arr[triangle_arr[0]], vertex_arr[triangle_arr[2]] - vertex_arr[triangle_arr[0]])))
+        light_normal = make_float3(*np.cross(vertex_arr[triangle_arr[1]] - vertex_arr[triangle_arr[0]], vertex_arr[triangle_arr[2]] - vertex_arr[triangle_arr[0]])) / light_area
+        print(f"Surface light direction: {light_normal}")
+        print(f"Surface light contribution: {light_area * emission}")
         return SurfaceLight(vertex_buffer, triangle_buffer, emission)
 
 
@@ -254,14 +263,15 @@ def influx_kernel(influx, point_light_count, direction_light_count, spp):
     surface_acc = make_float3(0.0)
     for i in range(spp):
         direction = cosine_sample_hemisphere(make_float2(sampler.next(), sampler.next()))
-        probe_ray = make_ray(vertex, onb.to_world(direction), 1e-3, 1e10)
+        probe_direction = onb.to_world(direction)
+        probe_ray = make_ray(vertex, probe_direction, 1e-3, 1e10)
         hit = accel.trace_closest(probe_ray)
         if hit.miss() or hit.inst == 0:
             continue
         else:
             surface_light = surface_light_buffer.read(hit.inst - 1)
-            surface_acc += surface_light.emission
-    influx.write(idx, (acc + surface_acc * (40 / (spp * math.pi))) * albedo)
+            surface_acc += surface_light.emission * abs(dot(light_normal, probe_direction)) * light_area / float(spp)
+    influx.write(idx, (acc + surface_acc * (40 / math.pi)) * amplifier * albedo)
 
 
 def collect_vertex_influx(scene: Scene) -> luisa.Buffer:
@@ -288,7 +298,7 @@ def efflux_kernel(influx, efflux, vertex_count) -> None:
         else:
             incidence = vertex_buffer.read(i)
             weight = diffusion_weight(length(incidence - vertex))
-            acc += influx.read(i).xyz * weight / float(vertex_count)
+            acc += influx.read(i).xyz * weight / float(vertex_count - 1)
     efflux.write(idx, acc)
 
 
@@ -301,7 +311,7 @@ def calculate_vertex_efflux(influx):
 def main():
     global ctx
     ctx = moderngl.create_standalone_context()
-    res = (800, 800)
+    res = (1000, 1000)
     camera = Camera(Vector3([0.0, 1.0, 8.0]), Vector3([0.0, 0.5, 0.0]), res, 20.0)
     shader = ctx.program(
         vertex_shader=
