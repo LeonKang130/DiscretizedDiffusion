@@ -79,27 +79,28 @@ class RenderModel(NamedTuple):
             print(f"Warning: Error occurred when parsing file '{filename}'")
             exit(-1)
         attrib = reader.GetAttrib()
-        print(f"Rendering model with {len(attrib.vertices) // 3} vertices.")
         vertex_buffer = luisa.Buffer.empty(len(attrib.vertices) // 3, dtype=float4)
         normal_buffer = luisa.Buffer.empty(vertex_buffer.size, dtype=float4)
-        vertex_buffer.copy_from_array(np.hstack(
+        vertex_arr = np.hstack(
             (
                 vertex_arr := np.array(attrib.vertices, dtype=np.float32).reshape(-1, 3),
                 np.zeros((vertex_arr.shape[0], 1))
             )
-        ).astype(np.float32))
+        ).astype(np.float32)
+        vertex_buffer.copy_from_array(vertex_arr)
         normal_vectors = np.array(attrib.normals, dtype=np.float32).reshape(-1, 3)
         normal_vectors /= np.linalg.norm(normal_vectors, axis=1).reshape((-1, 1))
-        normal_arr = np.empty_like(vertex_arr, dtype=np.float32)
+        normal_arr = np.empty((vertex_arr.shape[0], 3), dtype=np.float32)
         for shape in reader.GetShapes():
             for index in shape.mesh.indices:
                 normal_arr[index.vertex_index] = normal_vectors[index.normal_index]
-        normal_buffer.copy_from_array(np.hstack(
+        normal_arr = np.hstack(
             (
                 normal_arr,
                 np.zeros((normal_arr.shape[0], 1))
             )
-        ).astype(np.float32))
+        ).astype(np.float32)
+        normal_buffer.copy_from_array(normal_arr)
         shapes = reader.GetShapes()
         triangle_arr = np.array([
             index.vertex_index for shape in shapes for index in shape.mesh.indices
@@ -287,50 +288,33 @@ def diffusion_weight(r):
     return (a + a * a * a) / (8 * math.pi * dmfp * r)
 
 
-@luisa.func
-def efflux_kernel(influx, efflux, vertex_count) -> None:
-    acc = make_float3(0.0)
-    idx = dispatch_id().x
-    vertex = vertex_buffer.read(idx)
-    for i in range(vertex_count):
-        if i == idx:
-            continue
-        else:
-            incidence = vertex_buffer.read(i)
-            weight = diffusion_weight(length(incidence - vertex))
-            acc += influx.read(i).xyz * weight / float(vertex_count - 1)
-    efflux.write(idx, acc)
-
-
-def calculate_vertex_efflux(influx):
-    vertex_efflux_buffer = luisa.Buffer.empty(vertex_buffer.size, dtype=float3)
-    efflux_kernel(influx, vertex_efflux_buffer, vertex_buffer.size, dispatch_size=vertex_efflux_buffer.size)
-    return vertex_efflux_buffer
-
-
 def main():
     global ctx
-    ctx = moderngl.create_standalone_context()
+    ctx = moderngl.create_standalone_context(430)
     res = (1000, 1000)
     camera = Camera(Vector3([0.0, 1.0, 8.0]), Vector3([0.0, 0.5, 0.0]), res, 20.0)
+    luisa.init()
+    filename = sys.argv[1]
+    scene = parse_scene(filename)
+    upload_scene(scene)
     shader = ctx.program(
         vertex_shader=
         """
             #version 330
             uniform mat4 mvp;
-            in vec3 v_position;
-            in vec3 v_efflux;
-            out vec3 f_efflux;
+            in vec4 v_position;
+            in vec4 v_efflux;
+            out vec4 f_efflux;
             void main()
             {
-                gl_Position = mvp * vec4(v_position, 1.0);
+                gl_Position = mvp * vec4(v_position.xyz, 1.0);
                 f_efflux = v_efflux;
             }
         """,
         fragment_shader=
         """
             #version 330
-            in vec3 f_efflux;
+            in vec4 f_efflux;
             out vec4 f_color;
             vec3 aces_tone_mapping(vec3 color)
             {
@@ -339,28 +323,64 @@ def main():
             }
             void main()
             {
-                f_color = vec4(aces_tone_mapping(f_efflux), 1.0);
+                f_color = vec4(aces_tone_mapping(f_efflux.rgb), 1.0);
             }
         """
     )
-    luisa.init()
-    filename = sys.argv[1]
-    scene = parse_scene(filename)
-    upload_scene(scene)
-    influx = collect_vertex_influx(scene)
-    start = time.time()
-    efflux = calculate_vertex_efflux(influx)
-    print(f"Rendering 1 frame took: {(time.time() - start) * 1000} ms.")
-    efflux_buffer_object = ctx.buffer(
-        np.array([
-            [flux.x, flux.y, flux.z] for flux in efflux.to_list()
-        ], dtype=np.float32).tobytes()
+    compute_shader = ctx.compute_shader(
+        """
+            #version 430 core
+            layout(local_size_x = 1) in;
+            layout(std430, binding=0) buffer flux_in
+            {
+                vec4 influx[];
+            };
+            layout(std430, binding=1) buffer vertex_in
+            {
+                vec4 vertex[];
+            };
+            layout(std430, binding=2) buffer flux_out
+            {
+                vec4 efflux[];
+            };
+            void main()
+            {
+                int vertex_index = int(gl_GlobalInvocationID);
+                vec3 vertex_position = vertex[vertex_index].xyz;
+                vec3 acc = vec3(0.0);
+                for (int i = 0; i < vertex_count; i++)
+                {
+                    float r = length(vertex_position - vertex[i].xyz);
+                    vec3 a = exp(-r / (3.0 * dmfp));
+                    a = (a + a * a * a) / (8.0 * 3.1415926 * dmfp * r);
+                    if (i == vertex_index) a = vec3(0.0);
+                    acc += influx[i].rgb * a / float(vertex_count);
+                }
+                efflux[vertex_index] = vec4(acc, 1.0);
+            }
+        """.replace("vertex_count", str(vertex_buffer.size)).replace("dmfp", f"vec3({dmfp.x}, {dmfp.y}, {dmfp.z})")
     )
+    start = time.time()
+    influx = collect_vertex_influx(scene)
+    print(f"Collecting influx took: {(time.time() - start) * 1000} msec")
+    start = time.time()
+    influx_buffer_object = ctx.buffer(
+        np.array([
+            [flux.x, flux.y, flux.z, 0.0] for flux in influx.to_list()
+        ]).astype(np.float32).tobytes()
+    )
+    print(f"Transferring data took: {(time.time() - start) * 1000} msec")
+    start = time.time()
+    efflux_buffer_object = ctx.buffer(reserve=influx_buffer_object.size)
+    influx_buffer_object.bind_to_storage_buffer(0)
+    scene.render_model.vertex_buffer_object.bind_to_storage_buffer(1)
+    efflux_buffer_object.bind_to_storage_buffer(2)
+    compute_shader.run(vertex_buffer.size)
     vao = ctx.vertex_array(
         shader,
         [
-            (scene.render_model.vertex_buffer_object, '3f', 'v_position'),
-            (efflux_buffer_object, '3f', 'v_efflux'),
+            (scene.render_model.vertex_buffer_object, '4f', 'v_position'),
+            (efflux_buffer_object, '4f', 'v_efflux'),
         ],
         index_buffer=scene.render_model.index_buffer_object
     )
@@ -375,6 +395,7 @@ def main():
     gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, fbo_msaa.glo)
     gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, fbo.glo)
     gl.glBlitFramebuffer(0, 0, res[0], res[1], 0, 0, res[0], res[1], gl.GL_COLOR_BUFFER_BIT, gl.GL_LINEAR)
+    print(f"Rendering one frame took: {(time.time() - start) * 1000} msec")
     buffer = bytearray(res[0] * res[1] * 4 * 4)
     render_target.read_into(buffer)
     postfix = filename.split('/')[-1].split('\\')[-1].split('.')[0]
