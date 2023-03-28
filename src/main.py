@@ -2,20 +2,22 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 import time
+from enum import Enum
 from typing import NamedTuple, List
 
 import moderngl
 import numpy as np
 import tinyobjloader
+from OpenGL import GL as gl
 from matplotlib import pyplot as plt
 from pyrr import Vector3
-import sys
+
 import luisa
 from camera import Camera
 from luisa import RandomSampler
 from luisa.mathtypes import *
-import OpenGL.GL as gl
 
 accel: luisa.Accel = None
 vertex_buffer: luisa.Buffer = None
@@ -29,14 +31,21 @@ DevicePointLight = luisa.StructType(position=float3, emission=float3)
 DeviceSurfaceLight = luisa.StructType(emission=float3)
 light_area = 0.0
 light_normal = make_float3(0.0, -1.0, 0.0)
-amplifier = 6.218
+
+
+class Parameters(NamedTuple):
+    sigma_tr: float3
+    dmfp: float3
+    albedo: float3
+    zr: float3
+    zv: float3
 
 
 def calculate_parameters(sigma_a: float3, sigma_s: float3, g: float, eta: float):
     sigma_s_prime = sigma_s * (1.0 - g)
     sigma_t_prime = sigma_s_prime + sigma_a
     alpha_prime = sigma_s_prime / sigma_t_prime
-    fresnel = -1.440 / (eta * eta) + 0.710 / eta + 0.668 + 0.0636 * eta
+    fresnel = -(1.440 / eta + 0.710) / eta + 0.668 + 0.0636 * eta
     a = (1.0 + fresnel) / (1.0 - fresnel)
     albedo = 0.5 * alpha_prime * (1.0 + make_float3(
         math.exp(-4.0 / 3.0 * a * math.sqrt(3.0 * (1.0 - alpha_prime.x))),
@@ -57,11 +66,11 @@ def calculate_parameters(sigma_a: float3, sigma_s: float3, g: float, eta: float)
         (albedo.y - 0.33) ** 4,
         (albedo.z - 0.33) ** 4
     )) * sigma_tr)
-    return dmfp, albedo
+    zr = 1 / sigma_t_prime
+    zv = (1 + 4 / 3 * a) / sigma_t_prime
+    return Parameters(sigma_tr, dmfp, albedo, zr, zv)
 
 
-dmfp = make_float3(0.1)
-albedo = make_float3(1.0)
 ctx: moderngl.Context = None
 
 
@@ -69,6 +78,7 @@ class RenderModel(NamedTuple):
     vertex_buffer: luisa.Buffer
     vertex_buffer_object: moderngl.Buffer
     normal_buffer: luisa.Buffer
+    normal_buffer_object: moderngl.Buffer
     triangle_buffer: luisa.Buffer
     index_buffer_object: moderngl.Buffer
 
@@ -111,6 +121,7 @@ class RenderModel(NamedTuple):
             vertex_buffer,
             ctx.buffer(vertex_arr),
             normal_buffer,
+            ctx.buffer(normal_arr),
             triangle_buffer,
             ctx.buffer(triangle_arr)
         )
@@ -142,8 +153,10 @@ class SurfaceLight(NamedTuple):
         ], dtype=np.int32)
         triangle_buffer = luisa.Buffer.empty(len(triangle_arr), dtype=int)
         triangle_buffer.copy_from_array(triangle_arr)
-        light_area = float(np.linalg.norm(np.cross(vertex_arr[triangle_arr[1]] - vertex_arr[triangle_arr[0]], vertex_arr[triangle_arr[2]] - vertex_arr[triangle_arr[0]])))
-        light_normal = make_float3(*np.cross(vertex_arr[triangle_arr[1]] - vertex_arr[triangle_arr[0]], vertex_arr[triangle_arr[2]] - vertex_arr[triangle_arr[0]])) / light_area
+        light_area = float(np.linalg.norm(np.cross(vertex_arr[triangle_arr[1]] - vertex_arr[triangle_arr[0]],
+                                                   vertex_arr[triangle_arr[2]] - vertex_arr[triangle_arr[0]])))
+        light_normal = make_float3(*np.cross(vertex_arr[triangle_arr[1]] - vertex_arr[triangle_arr[0]],
+                                             vertex_arr[triangle_arr[2]] - vertex_arr[triangle_arr[0]])) / light_area
         print(f"Surface light direction: {light_normal}")
         print(f"Surface light contribution: {light_area * emission}")
         return SurfaceLight(vertex_buffer, triangle_buffer, emission)
@@ -159,20 +172,28 @@ class PointLight(NamedTuple):
     emission: float3
 
 
+class Equation(Enum):
+    Normalized = "normalized"
+    Dipole = "dipole"
+    Undefined = "undefined"
+
+
 class Scene(NamedTuple):
     render_model: RenderModel
     surface_lights: List[SurfaceLight]
     direction_lights: List[DirectionLight]
     point_lights: List[PointLight]
+    equation: Equation
+    sigma_a: float3
+    sigma_s: float3
+    g: float
+    eta: float
 
 
 def parse_scene(filename: str) -> Scene:
-    global vertex_buffer, normal_buffer, triangle_buffer, dmfp, albedo
+    global vertex_buffer, normal_buffer, triangle_buffer
     with open(filename, 'r') as file:
         scene_data = json.load(file)
-        dmfp, albedo = calculate_parameters(make_float3(*scene_data["sigma_a"]), make_float3(*scene_data["sigma_s"]),
-                                            scene_data["g"],
-                                            scene_data["eta"])
         render_model = RenderModel.from_file(scene_data["render_model"])
         vertex_buffer = render_model.vertex_buffer
         normal_buffer = render_model.normal_buffer
@@ -184,7 +205,23 @@ def parse_scene(filename: str) -> Scene:
             direction_lights.append(DirectionLight(make_float3(*light["direction"]), make_float3(*light["emission"])))
         for light in scene_data["point_lights"]:
             point_lights.append(PointLight(make_float3(*light["position"]), make_float3(*light["emission"])))
-        return Scene(render_model, surface_lights, direction_lights, point_lights)
+        if str.lower(scene_data["equation"]) == "dipole":
+            equation = Equation.Dipole
+        elif str.lower(scene_data["equation"]) == "normalized":
+            equation = Equation.Normalized
+        else:
+            equation = Equation.Undefined
+        return Scene(
+            render_model,
+            surface_lights,
+            direction_lights,
+            point_lights,
+            equation,
+            make_float3(*scene_data["sigma_a"]),
+            make_float3(*scene_data["sigma_s"]),
+            scene_data["g"],
+            scene_data["eta"]
+        )
 
 
 def upload_scene(scene: Scene) -> None:
@@ -271,8 +308,8 @@ def influx_kernel(influx, point_light_count, direction_light_count, spp):
             continue
         else:
             surface_light = surface_light_buffer.read(hit.inst - 1)
-            surface_acc += surface_light.emission * abs(dot(light_normal, probe_direction)) * light_area / float(spp)
-    influx.write(idx, (acc + surface_acc * (40 / math.pi)) * amplifier * albedo)
+            surface_acc += surface_light.emission
+    influx.write(idx, (acc + (surface_acc * 2.0 * 3.1415926) / float(spp)))
 
 
 def collect_vertex_influx(scene: Scene) -> luisa.Buffer:
@@ -280,12 +317,6 @@ def collect_vertex_influx(scene: Scene) -> luisa.Buffer:
     influx_kernel(vertex_influx_buffer, len(scene.point_lights), len(scene.direction_lights), 2500,
                   dispatch_size=vertex_influx_buffer.size)
     return vertex_influx_buffer
-
-
-@luisa.func
-def diffusion_weight(r):
-    a = exp(-r / (3.0 * dmfp))
-    return (a + a * a * a) / (8 * math.pi * dmfp * r)
 
 
 def main():
@@ -327,39 +358,6 @@ def main():
             }
         """
     )
-    compute_shader = ctx.compute_shader(
-        """
-            #version 430 core
-            layout(local_size_x = 1) in;
-            layout(std430, binding=0) buffer flux_in
-            {
-                vec4 influx[];
-            };
-            layout(std430, binding=1) buffer vertex_in
-            {
-                vec4 vertex[];
-            };
-            layout(std430, binding=2) buffer flux_out
-            {
-                vec4 efflux[];
-            };
-            void main()
-            {
-                int vertex_index = int(gl_GlobalInvocationID);
-                vec3 vertex_position = vertex[vertex_index].xyz;
-                vec3 acc = vec3(0.0);
-                for (int i = 0; i < vertex_count; i++)
-                {
-                    float r = length(vertex_position - vertex[i].xyz);
-                    vec3 a = exp(-r / (3.0 * dmfp));
-                    a = (a + a * a * a) / (8.0 * 3.1415926 * dmfp * r);
-                    if (i == vertex_index) a = vec3(0.0);
-                    acc += influx[i].rgb * a / float(vertex_count);
-                }
-                efflux[vertex_index] = vec4(acc, 1.0);
-            }
-        """.replace("vertex_count", str(vertex_buffer.size)).replace("dmfp", f"vec3({dmfp.x}, {dmfp.y}, {dmfp.z})")
-    )
     start = time.time()
     influx = collect_vertex_influx(scene)
     print(f"Collecting influx took: {(time.time() - start) * 1000} msec")
@@ -372,6 +370,93 @@ def main():
     print(f"Transferring data took: {(time.time() - start) * 1000} msec")
     start = time.time()
     efflux_buffer_object = ctx.buffer(reserve=influx_buffer_object.size)
+    parameters = calculate_parameters(scene.sigma_a, scene.sigma_s, scene.g, scene.eta)
+    if scene.equation == Equation.Normalized:
+        print("Rendering using Normalized BSSRDF")
+        compute_shader = ctx.compute_shader(
+            """
+                #version 430 core
+                layout(local_size_x = 1) in;
+                layout(std430, binding=0) buffer flux_in
+                {
+                    vec4 influx[];
+                };
+                layout(std430, binding=1) buffer vertex_in
+                {
+                    vec4 vertex[];
+                };
+                layout(std430, binding=2) buffer flux_out
+                {
+                    vec4 efflux[];
+                };
+                void main()
+                {
+                    int vertex_index = int(gl_GlobalInvocationID);
+                    vec3 vertex_position = vertex[vertex_index].xyz;
+                    vec3 acc = vec3(0.0);
+                    for (int i = 0; i < vertex_count; i++)
+                    {
+                        float r = length(vertex_position - vertex[i].xyz);
+                        vec3 a = exp(-r / (3.0 * dmfp));
+                        a = (a + a * a * a) / (8.0 * 3.1415926 * dmfp * r);
+                        a = (i == vertex_index || any(isnan(a))) ? vec3(0.0) : a;
+                        acc += influx[i].rgb * a / float(vertex_count);
+                    }
+                    efflux[vertex_index] = vec4(acc * albedo, 1.0);
+                }
+            """
+            .replace("vertex_count", str(vertex_buffer.size))
+            .replace("dmfp", f"vec3({parameters.dmfp.x}, {parameters.dmfp.y}, {parameters.dmfp.z})")
+            .replace("albedo", f"vec3({parameters.albedo.x}, {parameters.albedo.y}, {parameters.albedo.z})")
+        )
+    elif scene.equation == Equation.Dipole:
+        print("Rendering using Dipole")
+        compute_shader = ctx.compute_shader(
+            """
+                #version 430 core
+                layout(local_size_x = 1) in;
+                layout(std430, binding=0) buffer flux_in
+                {
+                    vec4 influx[];
+                };
+                layout(std430, binding=1) buffer vertex_in
+                {
+                    vec4 vertex[];
+                };
+                layout(std430, binding=2) buffer flux_out
+                {
+                    vec4 efflux[];
+                };
+                void main()
+                {
+                    int vertex_index = int(gl_GlobalInvocationID);
+                    vec3 vertex_position = vertex[vertex_index].xyz;
+                    vec3 acc = vec3(0.0);
+                    for (int i = 0; i < vertex_count; i++)
+                    {
+                        float r = length(vertex_position - vertex[i].xyz);
+                        vec3 dr = sqrt(r * r + zr * zr);
+                        vec3 dv = sqrt(r * r + zv * zv);
+                        vec3 weight =
+                            1.0 / (4.0 * 3.1415926) * (
+                                zr * (sigma_tr * dr + 1.0) * exp(-sigma_tr * dr) / (dr * dr * dr) +
+                                zv * (sigma_tr * dv + 1.0) * exp(-sigma_tr * dv) / (dv * dv * dv)
+                            );
+                        weight = any(isnan(weight)) ? vec3(1.0) : weight;
+                        acc += influx[i].rgb * weight / float(vertex_count);
+                    }
+                    efflux[vertex_index] = vec4(acc, 1.0);
+                }
+            """
+            .replace("vertex_count", str(vertex_buffer.size))
+            .replace("sigma_tr", f"vec3({parameters.sigma_tr.x}, {parameters.sigma_tr.y}, {parameters.sigma_tr.z})")
+            .replace("zr", f"vec3({parameters.zr.x}, {parameters.zr.y}, {parameters.zr.z})")
+            .replace("zv", f"vec3({parameters.zv.x}, {parameters.zv.y}, {parameters.zv.z})")
+        )
+    else:
+        compute_shader = None
+        print("Undefined diffusion equation")
+        exit(0)
     influx_buffer_object.bind_to_storage_buffer(0)
     scene.render_model.vertex_buffer_object.bind_to_storage_buffer(1)
     efflux_buffer_object.bind_to_storage_buffer(2)
@@ -386,7 +471,8 @@ def main():
     )
     shader['mvp'].write(camera.mvp)
     render_target_msaa = ctx.texture(res, 4, samples=4, dtype='f4')
-    fbo_msaa = ctx.framebuffer(color_attachments=[render_target_msaa], depth_attachment=ctx.depth_renderbuffer(res, samples=4))
+    fbo_msaa = ctx.framebuffer(color_attachments=[render_target_msaa],
+                               depth_attachment=ctx.depth_renderbuffer(res, samples=4))
     with ctx.scope(fbo_msaa, moderngl.DEPTH_TEST):
         fbo_msaa.clear(alpha=1.0)
         vao.render()
@@ -398,7 +484,7 @@ def main():
     print(f"Rendering one frame took: {(time.time() - start) * 1000} msec")
     buffer = bytearray(res[0] * res[1] * 4 * 4)
     render_target.read_into(buffer)
-    postfix = filename.split('/')[-1].split('\\')[-1].split('.')[0]
+    postfix = filename.split('/')[-1].split('\\')[-1].split('.')[0] + '-' + str(scene.equation).lower().split('.')[-1]
     plt.imsave(f"result-{postfix}.png", np.frombuffer(buffer, dtype=np.float32).reshape(res + (-1,))[::-1, ::-1])
 
 
