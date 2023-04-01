@@ -397,9 +397,9 @@ def main():
                     for (int i = 0; i < vertex_count; i++)
                     {
                         float r = length(vertex_position - vertex[i].xyz);
+                        r = max(r, 0.0175);
                         vec3 a = exp(-r / (3.0 * dmfp));
                         a = (a + a * a * a) / (8.0 * 3.1415926 * dmfp * r);
-                        a = (i == vertex_index || any(isnan(a))) ? vec3(0.0) : a;
                         acc += influx[i].rgb * a / float(vertex_count);
                     }
                     efflux[vertex_index] = vec4(acc * albedo, 1.0);
