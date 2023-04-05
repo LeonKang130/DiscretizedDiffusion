@@ -308,7 +308,7 @@ def influx_kernel(influx, point_light_count, direction_light_count, spp):
         else:
             surface_light = surface_light_buffer.read(hit.inst - 1)
             surface_acc += surface_light.emission / max(dot(normal, probe_direction), 0.05)
-    influx.write(idx, (acc + (surface_acc * 3.1415926) / float(spp)))
+    influx.write(idx, (acc + (surface_acc * 3.1415926 * 1.2) / float(spp)))
 
 
 def collect_vertex_influx(scene: Scene) -> luisa.Buffer:
