@@ -45,29 +45,28 @@ def calculate_parameters(sigma_a: float3, sigma_s: float3, g: float, eta: float)
     sigma_s_prime = sigma_s * (1.0 - g)
     sigma_t_prime = sigma_s_prime + sigma_a
     alpha_prime = sigma_s_prime / sigma_t_prime
-    fresnel = -(1.440 / eta + 0.710) / eta + 0.668 + 0.0636 * eta
+    fresnel = -1.440 / eta / eta + 0.710 / eta + 0.668 + 0.0636 * eta
     a = (1.0 + fresnel) / (1.0 - fresnel)
     albedo = 0.5 * alpha_prime * (1.0 + make_float3(
         math.exp(-4.0 / 3.0 * a * math.sqrt(3.0 * (1.0 - alpha_prime.x))),
         math.exp(-4.0 / 3.0 * a * math.sqrt(3.0 * (1.0 - alpha_prime.y))),
         math.exp(-4.0 / 3.0 * a * math.sqrt(3.0 * (1.0 - alpha_prime.z)))
-    )) * make_float3(
-        math.exp(-math.sqrt(3.0 * (1.0 - alpha_prime.x))),
-        math.exp(-math.sqrt(3.0 * (1.0 - alpha_prime.y))),
-        math.exp(-math.sqrt(3.0 * (1.0 - alpha_prime.z)))
+    )) / (1.0 + make_float3(
+        math.sqrt(3.0 * (1.0 - alpha_prime.x)),
+        math.sqrt(3.0 * (1.0 - alpha_prime.y)),
+        math.sqrt(3.0 * (1.0 - alpha_prime.z)))
     )
     sigma_tr = make_float3(
         math.sqrt(3.0 * (1.0 - alpha_prime.x)),
         math.sqrt(3.0 * (1.0 - alpha_prime.y)),
         math.sqrt(3.0 * (1.0 - alpha_prime.z))
     ) * sigma_t_prime
-    dmfp = 1.0 / ((3.5 + 100 * make_float3(
-        (albedo.x - 0.33) ** 4,
-        (albedo.y - 0.33) ** 4,
-        (albedo.z - 0.33) ** 4
-    )) * sigma_tr)
-    zr = 1 / sigma_t_prime
-    zv = (1 + 4 / 3 * a) / sigma_t_prime
+    s = albedo - 0.8
+    s *= s
+    s = 1.9 - albedo + 3.5 * s
+    dmfp = 1.0 / (s * sigma_t_prime)
+    zr = 1.0 / sigma_t_prime
+    zv = (1.0 + 4.0 / 3.0 * a) / sigma_t_prime
     return Parameters(sigma_tr, dmfp, albedo, zr, zv)
 
 
@@ -291,7 +290,7 @@ def influx_kernel(influx, point_light_count, direction_light_count, spp):
         direction = point_light.position - vertex
         probe_ray = make_ray(vertex, normalize(direction), 1e-3, length(direction))
         if not accel.trace_any(probe_ray):
-            acc += point_light.emission * max(dot(normal, direction), 0.0)
+            acc += point_light.emission * max(dot(normal, normalize(direction)), 0.0)
     for i in range(direction_light_count):
         direction_light = direction_light_buffer.read(i)
         direction = normalize(-direction_light.direction)
@@ -308,8 +307,8 @@ def influx_kernel(influx, point_light_count, direction_light_count, spp):
             continue
         else:
             surface_light = surface_light_buffer.read(hit.inst - 1)
-            surface_acc += surface_light.emission
-    influx.write(idx, (acc + (surface_acc * 2.0 * 3.1415926) / float(spp)))
+            surface_acc += surface_light.emission / max(dot(normal, probe_direction), 0.05)
+    influx.write(idx, (acc + (surface_acc * 3.1415926) / float(spp)))
 
 
 def collect_vertex_influx(scene: Scene) -> luisa.Buffer:
@@ -397,12 +396,12 @@ def main():
                     for (int i = 0; i < vertex_count; i++)
                     {
                         float r = length(vertex_position - vertex[i].xyz);
-                        r = max(r, 0.0175);
+                        r = max(r, 0.02);
                         vec3 a = exp(-r / (3.0 * dmfp));
                         a = (a + a * a * a) / (8.0 * 3.1415926 * dmfp * r);
-                        acc += influx[i].rgb * a / float(vertex_count);
+                        acc += influx[i].rgb * a;
                     }
-                    efflux[vertex_index] = vec4(acc * albedo, 1.0);
+                    efflux[vertex_index] = vec4(acc * albedo / float(vertex_count), 1.0);
                 }
             """
             .replace("vertex_count", str(vertex_buffer.size))
