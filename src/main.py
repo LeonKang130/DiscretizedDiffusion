@@ -396,12 +396,18 @@ def main():
                     for (int i = 0; i < vertex_count; i++)
                     {
                         float r = length(vertex_position - vertex[i].xyz);
-                        r = max(r, 0.02);
-                        vec3 a = exp(-r / (3.0 * dmfp));
-                        a = (a + a * a * a) / (8.0 * 3.1415926 * dmfp * r);
-                        acc += influx[i].rgb * a;
+                        if (r <= 0.02) {
+                            vec3 a = 1.0 / (dmfp * 0.08 * 3.1415926);
+                            acc += influx[i].rgb * a;
+                        }
+                        else {
+                            vec3 a = exp(-r / (3.0 * dmfp));
+                            a = (a + a * a * a) / (8.0 * 3.1415926 * dmfp * r);
+                            acc += influx[i].rgb * a;
+                        }
+                        
                     }
-                    efflux[vertex_index] = vec4(acc * albedo / float(vertex_count), 1.0);
+                    efflux[vertex_index] = vec4(acc / float(vertex_count) * albedo, 1.0);
                 }
             """
             .replace("vertex_count", str(vertex_buffer.size))
