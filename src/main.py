@@ -126,7 +126,6 @@ def parse_scene(filename: str):
         ])
         # calculate total surface area of the model
         global surface_area
-        surface_areas = np.zeros((vertex_array.shape[0], 1), dtype=np.float32)
         for i in range(len(triangle_array) // 3):
             i0, i1, i2 = triangle_array[i:i+3]
             p0, p1, p2 = map(lambda x: vertex_array[x], (i0, i1, i2))
@@ -135,18 +134,16 @@ def parse_scene(filename: str):
                 continue
             local_normal = np.cross((p1 - p0) / np.linalg.norm(p1 - p0), (p2 - p0) / np.linalg.norm(p2 - p0))
             local_normal /= np.linalg.norm(local_normal)
-            projected_area0, projected_area1, projected_area2 = map(
-                lambda x: local_surface_area / 3 * np.abs(np.dot(normal_array[x], local_normal)),
-                (i0, i1, i2)
+            surface_area += sum(
+                map(
+                    lambda x: local_surface_area / 3 * np.abs(np.dot(normal_array[x], local_normal)),
+                    (i0, i1, i2)
+                )
             )
-            surface_areas[i0] += projected_area0
-            surface_areas[i1] += projected_area1
-            surface_areas[i2] += projected_area2
-            surface_area += projected_area0 + projected_area1 + projected_area2
         triangle_arrays.append(triangle_array)
         # upload vertex array and normal array to GL
         global vbo, ibo, nbo
-        vbo = ctx.buffer(np.hstack((vertex_array, surface_areas)))
+        vbo = ctx.buffer(np.hstack((vertex_array, np.zeros((vertex_array.shape[0], 1), dtype=np.float32))))
         ibo = ctx.buffer(triangle_array.astype(np.int32))
         nbo = ctx.buffer(np.hstack((normal_array, np.zeros((normal_array.shape[0], 1), dtype=np.float32))))
         # parse and upload light information
