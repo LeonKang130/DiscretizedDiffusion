@@ -7,6 +7,7 @@ from pyrr import Vector3
 from camera import Camera
 import luisa
 from luisa.mathtypes import *
+from luisa.accel import offset_ray_origin
 from luisa import RandomSampler
 import moderngl
 import tinyobjloader
@@ -88,6 +89,7 @@ sigma_a: float3 = make_float3(1.0)
 sigma_s: float3 = make_float3(1.0)
 eta: float = 1.0
 g: float = 0.0
+spp: int = 2400
 
 
 class Equation(Enum):
@@ -134,12 +136,8 @@ def parse_scene(filename: str):
                 continue
             local_normal = np.cross((p1 - p0) / np.linalg.norm(p1 - p0), (p2 - p0) / np.linalg.norm(p2 - p0))
             local_normal /= np.linalg.norm(local_normal)
-            surface_area += sum(
-                map(
-                    lambda x: local_surface_area / 3 * np.abs(np.dot(normal_array[x], local_normal)),
-                    (i0, i1, i2)
-                )
-            )
+            surface_area +=\
+                local_surface_area / 3 * sum(max(np.dot(normal_array[x], local_normal), 0.0) for x in (i0, i1, i2))
         triangle_arrays.append(triangle_array)
         # upload vertex array and normal array to GL
         global vbo, ibo, nbo
@@ -227,6 +225,8 @@ def parse_scene(filename: str):
         sigma_s = make_float3(*scene_data["sigma_s"])
         eta = scene_data["eta"]
         g = scene_data["g"]
+        global spp
+        spp = scene_data["spp"]
 
 
 class Parameters(NamedTuple):
@@ -270,7 +270,7 @@ def calculate_parameters():
 
 
 @luisa.func
-def vertex_influx_kernel(influx, spp):
+def vertex_influx_kernel(influx):
     acc = make_float3(0.0)
     idx = dispatch_id().x
     vertex = vertex_buffer.read(idx).xyz
@@ -279,20 +279,22 @@ def vertex_influx_kernel(influx, spp):
     for i in range(point_light_count):
         point_light = point_light_buffer.read(i)
         direction = point_light.position - vertex
-        probe_ray = make_ray(vertex, normalize(direction), 1e-2, length(direction))
+        probe_ray = make_ray(offset_ray_origin(vertex, normal), normalize(direction), 1e-2, length(direction))
         if not accel.trace_any(probe_ray):
             acc += point_light.emission * max(dot(normal, normalize(direction)), 0.0)
     for i in range(direction_light_count):
         direction_light = direction_light_buffer.read(i)
         direction = normalize(-direction_light.direction)
-        probe_ray = make_ray(vertex, direction, 1e-2, 1e10)
+        probe_ray = make_ray(offset_ray_origin(vertex, normal), direction, 1e-2, 1e10)
         if not accel.trace_any(probe_ray):
             acc += direction_light.emission * max(dot(normal, direction), 0.0)
+    sampler = RandomSampler(make_int3(idx))
     for i in range(spp):
         # TODO add light importance sampling to accelerate convergence
-        sampler = RandomSampler(make_int3(idx, i, idx ^ i))
         direction = onb.to_world(cosine_sample_hemisphere(make_float2(sampler.next(), sampler.next())))
-        ray = make_ray(vertex, direction, 1e-2, 1e10)
+        if dot(direction, normal) < 1e-3:
+            continue
+        ray = make_ray(offset_ray_origin(vertex, normal), direction, 1e-2, 1e10)
         hit = accel.trace_closest(ray)
         if hit.miss() or hit.inst == 0:
             continue
@@ -311,7 +313,7 @@ def vertex_influx_kernel(influx, spp):
 
 def collect_vertex_influx() -> luisa.Buffer:
     vertex_influx_buffer = luisa.Buffer.empty(model_vertex_count, float3)
-    vertex_influx_kernel(vertex_influx_buffer, 6400, dispatch_size=model_vertex_count)
+    vertex_influx_kernel(vertex_influx_buffer, dispatch_size=model_vertex_count)
     return vertex_influx_buffer
 
 
@@ -388,15 +390,10 @@ def main():
                     for (int i = 0; i < vertex_count; i++)
                     {
                         float r = length(vertex_position - vertex[i].xyz);
-                        if (r <= 0.025) {
-                            vec3 a = 1.0 / (dmfp * 0.1 * 3.1415926);
-                            acc += influx[i].rgb * a;
-                        }
-                        else {
-                            vec3 a = exp(-r / (3.0 * dmfp));
-                            a = (a + a * a * a) / (8.0 * 3.1415926 * dmfp * r);
-                            acc += influx[i].rgb * a;
-                        }
+                        r = max(0.02, r);
+                        vec3 a = exp(-r / (3.0 * dmfp));
+                        a = (a + a * a * a) / (8.0 * 3.1415926 * dmfp * r);
+                        acc += influx[i].rgb * a;
                     }
                     acc *= albedo * surface_area / (vertex_count * 3.1415926) * transmittance;
                     efflux[vertex_index] = vec4(acc, 1.0);
