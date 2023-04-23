@@ -16,5 +16,5 @@
     "sigma_s": [0.9471, 8.5516, 1.77873],
     "g": 0.0,
     "eta": 1.3,
-    "equation": "normalized"
+    "equation": "dipole"
 }

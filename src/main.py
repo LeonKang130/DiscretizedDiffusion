@@ -279,7 +279,6 @@ def calculate_parameters():
 def vertex_influx_kernel(influx, spp):
     acc = make_float3(0.0)
     idx = dispatch_id().x
-    sampler = RandomSampler(make_int3(idx))
     vertex = vertex_buffer.read(idx).xyz
     normal = normal_buffer.read(idx).xyz
     onb = make_onb(normal)
@@ -295,8 +294,8 @@ def vertex_influx_kernel(influx, spp):
         probe_ray = make_ray(vertex, direction, 1e-2, 1e10)
         if not accel.trace_any(probe_ray):
             acc += direction_light.emission * max(dot(normal, direction), 0.0)
-    surface_acc = make_float3(0.0)
     for i in range(spp):
+        sampler = RandomSampler(make_int3(idx, i, idx ^ i))
         direction = cosine_sample_hemisphere(make_float2(sampler.next(), sampler.next()))
         probe_direction = onb.to_world(direction)
         probe_ray = make_ray(vertex, probe_direction, 1e-2, 1e10)
@@ -312,8 +311,7 @@ def vertex_influx_kernel(influx, spp):
             n1 = normal_buffer.read(i1)
             n2 = normal_buffer.read(i2)
             n = normalize(hit.interpolate(n0, n1, n2))
-            surface_acc += surface_light.emission * abs(dot(n, direction))
-    acc += surface_acc / float(spp)
+            acc += surface_light.emission * abs(dot(n, direction)) * math.pi / float(spp)
     influx.write(idx, acc)
 
 
@@ -406,7 +404,7 @@ def main():
                             acc += influx[i].rgb * a;
                         }
                     }
-                    acc *= albedo * surface_area / float(vertex_count) * transmittance;
+                    acc *= albedo * surface_area / (vertex_count * 3.1415926) * transmittance;
                     efflux[vertex_index] = vec4(acc, 1.0);
                 }
             """
@@ -439,7 +437,7 @@ def main():
                 {
                     int vertex_index = int(gl_GlobalInvocationID);
                     vec3 vertex_position = vertex[vertex_index].xyz;
-                    vec3 acc = influx[vertex_index].xyz * albedo / 8.0;
+                    vec3 acc = influx[vertex_index].xyz * albedo / (8.0 * 3.1415926);
                     for (int i = 0; i < vertex_count; i++)
                     {
                         float r = length(vertex_position - vertex[i].xyz);
@@ -451,7 +449,7 @@ def main():
                                 zv * (sigma_tr * dv + 1.0) * exp(-sigma_tr * dv) / (dv * dv * dv)
                             );
                         weight = any(isnan(weight)) ? vec3(0.0) : weight;
-                        acc += influx[i].rgb * weight * surface_area / float(vertex_count);
+                        acc += influx[i].rgb * weight * surface_area / float(vertex_count * 3.1415926);
                     }
                     acc *= transmittance;
                     efflux[vertex_index] = vec4(acc, 1.0);
