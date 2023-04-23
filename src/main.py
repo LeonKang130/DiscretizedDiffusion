@@ -84,7 +84,6 @@ accel: luisa.Accel = luisa.Accel()
 vbo: moderngl.Buffer = None
 nbo: moderngl.Buffer = None
 ibo: moderngl.Buffer = None
-surface_area: float = 0
 sigma_a: float3 = make_float3(1.0)
 sigma_s: float3 = make_float3(1.0)
 eta: float = 1.0
@@ -127,21 +126,23 @@ def parse_scene(filename: str):
             index.vertex_index for shape in reader.GetShapes() for index in shape.mesh.indices
         ])
         # calculate total surface area of the model
-        global surface_area
-        for i in range(len(triangle_array) // 3):
+        # also the wrongly wired triangles are re-sorted in this part to support face culling
+        surface_areas = np.zeros((model_vertex_count, 1), dtype=np.float32)
+        for i in range(0, len(triangle_array), 3):
             i0, i1, i2 = triangle_array[i:i+3]
             p0, p1, p2 = map(lambda x: vertex_array[x], (i0, i1, i2))
+            local_normal = np.cross(p1 - p0, p2 - p0)
+            average_normal = normal_array[i0] + normal_array[i1] + normal_array[i2]
+            if np.dot(local_normal, average_normal) < 0:
+                triangle_array[i], triangle_array[i + 1] = triangle_array[i + 1], triangle_array[i]
             local_surface_area = np.linalg.norm(np.cross(p1 - p0, p2 - p0)) * 0.5
-            if local_surface_area == 0.0:
-                continue
-            local_normal = np.cross((p1 - p0) / np.linalg.norm(p1 - p0), (p2 - p0) / np.linalg.norm(p2 - p0))
-            local_normal /= np.linalg.norm(local_normal)
-            surface_area +=\
-                local_surface_area / 3 * sum(max(np.dot(normal_array[x], local_normal), 0.0) for x in (i0, i1, i2))
+            surface_areas[i0] += local_surface_area / 3
+            surface_areas[i1] += local_surface_area / 3
+            surface_areas[i2] += local_surface_area / 3
         triangle_arrays.append(triangle_array)
         # upload vertex array and normal array to GL
         global vbo, ibo, nbo
-        vbo = ctx.buffer(np.hstack((vertex_array, np.zeros((vertex_array.shape[0], 1), dtype=np.float32))))
+        vbo = ctx.buffer(np.hstack((vertex_array, surface_areas)))
         ibo = ctx.buffer(triangle_array.astype(np.int32))
         nbo = ctx.buffer(np.hstack((normal_array, np.zeros((normal_array.shape[0], 1), dtype=np.float32))))
         # parse and upload light information
@@ -393,16 +394,15 @@ def main():
                         r = max(0.02, r);
                         vec3 a = exp(-r / (3.0 * dmfp));
                         a = (a + a * a * a) / (8.0 * 3.1415926 * dmfp * r);
-                        acc += influx[i].rgb * a;
+                        acc += influx[i].rgb * a * vertex[i].w;
                     }
-                    acc *= albedo * surface_area / (vertex_count * 3.1415926) * transmittance;
+                    acc *= albedo * transmittance;
                     efflux[vertex_index] = vec4(acc, 1.0);
                 }
             """
             .replace("vertex_count", f"{model_vertex_count}")
             .replace("dmfp", f"vec3({parameters.dmfp.x}, {parameters.dmfp.y}, {parameters.dmfp.z})")
             .replace("albedo", f"vec3({parameters.albedo.x}, {parameters.albedo.y}, {parameters.albedo.z})")
-            .replace("surface_area", f"{surface_area}")
             .replace("transmittance", f"{parameters.transmittance}")
         )
     elif equation == Equation.Dipole:
@@ -440,7 +440,7 @@ def main():
                                 zv * (sigma_tr * dv + 1.0) * exp(-sigma_tr * dv) / (dv * dv * dv)
                             );
                         weight = any(isnan(weight)) ? vec3(0.0) : weight;
-                        acc += influx[i].rgb * weight * surface_area / float(vertex_count * 3.1415926);
+                        acc += influx[i].rgb * weight * vertex[i].w;
                     }
                     acc *= transmittance;
                     efflux[vertex_index] = vec4(acc, 1.0);
@@ -450,7 +450,6 @@ def main():
             .replace("sigma_tr", f"vec3({parameters.sigma_tr.x}, {parameters.sigma_tr.y}, {parameters.sigma_tr.z})")
             .replace("zr", f"vec3({parameters.zr.x}, {parameters.zr.y}, {parameters.zr.z})")
             .replace("zv", f"vec3({parameters.zv.x}, {parameters.zv.y}, {parameters.zv.z})")
-            .replace("surface_area", f"{surface_area}")
             .replace("albedo", f"vec3({albedo.x}, {albedo.y}, {albedo.z})")
             .replace("transmittance", f"{parameters.transmittance}")
         )
@@ -473,7 +472,7 @@ def main():
     render_target_msaa = ctx.texture(res, 4, samples=4, dtype='f4')
     fbo_msaa = ctx.framebuffer(color_attachments=[render_target_msaa],
                                depth_attachment=ctx.depth_renderbuffer(res, samples=4))
-    with ctx.scope(fbo_msaa, moderngl.DEPTH_TEST):
+    with ctx.scope(fbo_msaa, moderngl.DEPTH_TEST | moderngl.CULL_FACE):
         fbo_msaa.clear(alpha=1.0)
         vao.render()
     render_target = ctx.texture(res, 4, dtype='f4')
