@@ -1,19 +1,14 @@
 # DiscretizedDiffusion
 
-Render subsurface diffusion via convolution over vertices on the mesh.
+Render subsurface scattering via convolution over vertices on the mesh.
 
-The current version looks as follow:
+![teaser](https://github.com/LeonKang130/DiscretizedDiffusion/blob/main/teaser.png)
 
-![normalized bssrdf](https://github.com/LeonKang130/DiscretizedDiffusion/blob/main/result-scene-normalized.png)
+The method can be divided into three steps:
 
-![dipole](https://github.com/LeonKang130/DiscretizedDiffusion/blob/main/result-scene-dipole.png)
+- Gather influx around each vertex of the mesh using path tracing(or rasterization if no surface light is involved in the scene).
+- Transfer the influx buffer to OpenGL.
+- Use compute shader to do a $O(n^2)$ convolution over the mesh, transforming the influx into efflux.
+- Use the efflux(color) at each vertex to do fragment shading.
 
-The composition of time spent to render one frame is approximately as following:
-
-- Collect vertex influx using ray tracing: 20ms
-- Transfer influx data from LC to OpenGL: 200ms
-- Compute shader && vertex lighting: 15ms
-
-To use the repo, pass a `json` file to config the scene. You may refer to `scenes/*.json` for examples.
-
-Update: Both **Normalized BSSRDF** and **Dipole** can be selected for the equation of diffusion. To do so, you can set the `equation` field of the config file to **"dipole"** or **"normalized"**.
+To use the repo, pass a `json` file as the first argument to config the scene. You may refer to `scenes/*.json` for examples of such configuration.
