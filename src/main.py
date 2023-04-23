@@ -292,6 +292,7 @@ def vertex_influx_kernel(influx, spp):
         if not accel.trace_any(probe_ray):
             acc += direction_light.emission * max(dot(normal, direction), 0.0)
     for i in range(spp):
+        # TODO add light importance sampling to accelerate convergence
         sampler = RandomSampler(make_int3(idx, i, idx ^ i))
         direction = cosine_sample_hemisphere(make_float2(sampler.next(), sampler.next()))
         probe_direction = onb.to_world(direction)
