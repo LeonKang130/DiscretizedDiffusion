@@ -265,10 +265,10 @@ def calculate_parameters():
         math.sqrt(3.0 * (1.0 - alpha_prime.y)),
         math.sqrt(3.0 * (1.0 - alpha_prime.z))
     ) * sigma_t_prime
-    s = albedo - 0.8
+    s = albedo - 0.33
     s *= s
-    s = 1.9 - albedo + 3.5 * s
-    dmfp = 1.0 / (s * sigma_t_prime)
+    s = 3.5 + 100 * s * s
+    dmfp = 1.0 / (s * sigma_tr)
     zr = 1.0 / sigma_t_prime
     zv = (1.0 + 4.0 / 3.0 * a) / sigma_t_prime
     reflectance = (1.0 - eta) / (1.0 + eta)
@@ -321,69 +321,6 @@ def collect_vertex_influx() -> luisa.Buffer:
     vertex_influx_buffer = luisa.Buffer.empty(model_vertex_count, float3)
     vertex_influx_kernel(vertex_influx_buffer, 2000, dispatch_size=model_vertex_count)
     return vertex_influx_buffer
-
-
-epsilon = sys.float_info.epsilon
-@luisa.func
-def vertex_total_scattering_kernel(efflux, spp):
-    acc = make_float3(0.0)
-    beta = make_float3(1.0)
-    idx = heap.buffer_read(int, 0, dispatch_id().x)
-    sampler = RandomSampler(make_int3(idx))
-    curr_pos = vertex_buffer.read(idx).xyz
-    curr_dir = -normal_buffer.read(idx).xyz
-    for i in range(spp):
-        for depth in range(20):
-            nxt_event = -log(max(epsilon, sampler.next())) / (sigma_a + sigma_s).x
-            ray = make_ray(curr_pos, curr_dir, 1e-4, nxt_event)
-            hit = accel.trace_closest(ray)
-            if hit.miss():
-                curr_pos += curr_dir * nxt_event
-                curr_dir = uniform_sample_sphere(make_float2(sampler.next(), sampler.next()))
-                beta *= sigma_s / (sigma_a + sigma_s) * 4.0 * math.pi
-            elif hit.inst == 0:
-                i0 = heap.buffer_read(int, 0, hit.prim * 3)
-                i1 = heap.buffer_read(int, 0, hit.prim * 3 + 1)
-                i2 = heap.buffer_read(int, 0, hit.prim * 3 + 2)
-                p0 = vertex_buffer.read(i0)
-                p1 = vertex_buffer.read(i1)
-                p2 = vertex_buffer.read(i2)
-                n0 = normal_buffer.read(i0)
-                n1 = normal_buffer.read(i1)
-                n2 = normal_buffer.read(i2)
-                curr_pos = hit.interpolate(p0, p1, p2)
-                n = normalize(hit.interpolate(n0, n1, n2))
-                onb = make_onb(n)
-                for idx in range(point_light_count):
-                    point_light = point_light_buffer.read(idx)
-                    direction = point_light.position - curr_pos
-                    probe_ray = make_ray(curr_pos, normalize(direction), 1e-3, length(direction))
-                    if not accel.trace_any(probe_ray):
-                        acc += point_light.emission * max(dot(n, normalize(direction)), 0.0)
-                for idx in range(direction_light_count):
-                    direction_light = direction_light_buffer.read(idx)
-                    direction = normalize(-direction_light.direction)
-                    probe_ray = make_ray(curr_pos, direction, 1e-3, 1e10)
-                    if not accel.trace_any(probe_ray):
-                        acc += direction_light.emission * max(dot(n, direction), 0.0)
-                for collection in range(16):
-                    curr_dir = onb.to_world(cosine_sample_hemisphere(make_float2(sampler.next(), sampler.next())))
-                    ray = make_ray(curr_pos, curr_dir, 1e-4, 1e10)
-                    hit = accel.trace_closest(ray)
-                    if not hit.miss() and hit.inst != 0:
-                        i0 = heap.buffer_read(int, hit.inst, hit.prim * 3)
-                        i1 = heap.buffer_read(int, hit.inst, hit.prim * 3 + 1)
-                        i2 = heap.buffer_read(int, hit.inst, hit.prim * 3 + 2)
-                        n0 = normal_buffer.read(i0)
-                        n1 = normal_buffer.read(i1)
-                        n2 = normal_buffer.read(i2)
-                        n = normalize(hit.interpolate(n0, n1, n2))
-                        light = surface_light_buffer.read(hit.inst - 1)
-                        acc += (beta * math.pi / 16) * light.emission * abs(dot(curr_dir, n))
-                break
-            else:
-                break
-    efflux.write(idx, acc)
 
 
 def main():
@@ -469,7 +406,7 @@ def main():
                             acc += influx[i].rgb * a;
                         }
                     }
-                    acc *= albedo * surface_area / float(vertex_count) * transmittance
+                    acc *= albedo * surface_area / float(vertex_count) * transmittance;
                     efflux[vertex_index] = vec4(acc, 1.0);
                 }
             """
