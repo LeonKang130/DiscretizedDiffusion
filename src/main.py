@@ -93,7 +93,6 @@ g: float = 0.0
 class Equation(Enum):
     Normalized = "normalized"
     Dipole = "dipole"
-    VPT = "vpt"
     Undefined = "undefined"
 
 
@@ -223,8 +222,6 @@ def parse_scene(filename: str):
             equation = Equation.Dipole
         elif str.lower(scene_data["equation"]) == "normalized":
             equation = Equation.Normalized
-        elif str.lower(scene_data["equation"]) == "vpt":
-            equation = Equation.VPT
         else:
             equation = Equation.Undefined
         # parse parameters
@@ -317,7 +314,7 @@ def vertex_influx_kernel(influx, spp):
 
 def collect_vertex_influx() -> luisa.Buffer:
     vertex_influx_buffer = luisa.Buffer.empty(model_vertex_count, float3)
-    vertex_influx_kernel(vertex_influx_buffer, 2000, dispatch_size=model_vertex_count)
+    vertex_influx_kernel(vertex_influx_buffer, 6400, dispatch_size=model_vertex_count)
     return vertex_influx_buffer
 
 
