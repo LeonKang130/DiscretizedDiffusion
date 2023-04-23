@@ -291,10 +291,9 @@ def vertex_influx_kernel(influx, spp):
     for i in range(spp):
         # TODO add light importance sampling to accelerate convergence
         sampler = RandomSampler(make_int3(idx, i, idx ^ i))
-        direction = cosine_sample_hemisphere(make_float2(sampler.next(), sampler.next()))
-        probe_direction = onb.to_world(direction)
-        probe_ray = make_ray(vertex, probe_direction, 1e-2, 1e10)
-        hit = accel.trace_closest(probe_ray)
+        direction = onb.to_world(cosine_sample_hemisphere(make_float2(sampler.next(), sampler.next())))
+        ray = make_ray(vertex, direction, 1e-2, 1e10)
+        hit = accel.trace_closest(ray)
         if hit.miss() or hit.inst == 0:
             continue
         else:
