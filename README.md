@@ -2,7 +2,7 @@
 
 Render subsurface scattering via convolution over vertices on the mesh.
 
-![teaser](https://github.com/LeonKang130/DiscretizedDiffusion/blob/main/teaser.png)
+![teaser](https://github.com/LeonKang130/DiscretizedDiffusion/blob/main/result-teaser-dipole.png)
 
 The method can be divided into three steps:
 
