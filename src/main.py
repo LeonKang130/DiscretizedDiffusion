@@ -494,7 +494,7 @@ def main():
     buffer = bytearray(res[0] * res[1] * 4 * 4)
     render_target.read_into(buffer)
     postfix = sys.argv[1].split('/')[-1].split('\\')[-1].split('.')[0] + '-' + str(equation).lower().split('.')[-1]
-    plt.imsave(f"result-teaser-{postfix}.png", np.frombuffer(buffer, dtype=np.float32).reshape(res + (-1,))[::-1, ::-1])
+    plt.imsave(f"result-{postfix}.png", np.frombuffer(buffer, dtype=np.float32).reshape(res + (-1,))[::-1, ::-1])
 
 
 if __name__ == "__main__":
