@@ -4,8 +4,6 @@ Render subsurface scattering via convolution over vertices on the mesh.
 
 ![teaser-dipole](https://github.com/LeonKang130/DiscretizedDiffusion/blob/main/result-teaser-dipole.png)
 
-![teaser-normalized](https://github.com/LeonKang130/DiscretizedDiffusion/blob/main/result-teaser-normalized.png)
-
 The method can be divided into three steps:
 
 - Gather influx around each vertex of the mesh using path tracing(or rasterization if no surface light is involved in the scene).

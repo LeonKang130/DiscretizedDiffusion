@@ -318,6 +318,14 @@ def collect_vertex_influx() -> luisa.Buffer:
     return vertex_influx_buffer
 
 
+@luisa.func
+def linear_to_srgb(x):
+    return clamp(select(1.055 * x ** (1.0 / 2.4) - 0.055,
+                        12.92 * x,
+                        x <= 0.00031308),
+                 0.0, 1.0)
+
+
 def main():
     res = (1000, 1000)
     camera = Camera(Vector3([0.0, 1.0, 8.0]), Vector3([0.0, 0.5, 0.0]), res, 20.0)
@@ -341,14 +349,16 @@ def main():
             #version 330
             in vec4 f_efflux;
             out vec4 f_color;
-            vec3 aces_tone_mapping(vec3 color)
+            vec3 linear_to_srgb(vec3 color)
             {
-                vec3 mapped = color * (2.51 * color + 0.03) / (color * (2.43 * color + 0.59) + 0.14);
-                return clamp(mapped, 0.0, 1.0);
+                vec3 a = 1.055 * pow(color, vec3(1.0 / 2.4)) - 0.055;
+                vec3 b = 12.92 * color;
+                vec3 cut_off = vec3(lessThan(color, vec3(0.00031308)));
+                return clamp(mix(a, b, cut_off), 0.0, 1.0);
             }
             void main()
             {
-                f_color = vec4(aces_tone_mapping(f_efflux.rgb), 1.0);
+                f_color = vec4(linear_to_srgb(f_efflux.rgb), 1.0);
             }
         """
     )
@@ -484,7 +494,7 @@ def main():
     buffer = bytearray(res[0] * res[1] * 4 * 4)
     render_target.read_into(buffer)
     postfix = sys.argv[1].split('/')[-1].split('\\')[-1].split('.')[0] + '-' + str(equation).lower().split('.')[-1]
-    plt.imsave(f"result-{postfix}.png", np.frombuffer(buffer, dtype=np.float32).reshape(res + (-1,))[::-1, ::-1])
+    plt.imsave(f"result-teaser-{postfix}.png", np.frombuffer(buffer, dtype=np.float32).reshape(res + (-1,))[::-1, ::-1])
 
 
 if __name__ == "__main__":
