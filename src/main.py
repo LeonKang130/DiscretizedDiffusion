@@ -1,22 +1,25 @@
 from __future__ import annotations
-import time
-from typing import NamedTuple
-from OpenGL import GL as gl
-from matplotlib import pyplot as plt
-from pyrr import Vector3
-from camera import Camera
-import luisa
-from luisa.mathtypes import *
-from luisa.accel import offset_ray_origin
-from luisa import RandomSampler
-import moderngl
-import tinyobjloader
-import numpy as np
+
 import json
-from enum import Enum
 import math
 import sys
+import time
+from enum import Enum
+from typing import NamedTuple
 
+import luisa
+import moderngl
+import numba
+import numpy as np
+import tinyobjloader
+from OpenGL import GL as gl
+from luisa import RandomSampler
+from luisa.accel import offset_ray_origin
+from luisa.mathtypes import *
+from matplotlib import pyplot as plt
+from pyrr import Vector3
+
+from camera import Camera
 
 DeviceDirectionLight = luisa.StructType(direction=float3, emission=float3)
 DevicePointLight = luisa.StructType(position=float3, emission=float3)
@@ -100,6 +103,37 @@ class Equation(Enum):
 equation: Equation = Equation.Undefined
 
 
+@numba.jit
+def normal_array_kernel(triangle_array, normal_index_array, normal_vectors, vertex_num):
+    normal_array = np.empty((vertex_num, 3), dtype=np.float32)
+    for normal_index, vertex_index in zip(normal_index_array, triangle_array):
+        normal_array[vertex_index] = normal_vectors[normal_index]
+    return normal_array
+
+
+@numba.jit
+def surface_area_kernel(triangle_array, vertex_array):
+    surface_areas = np.zeros(vertex_array.shape[0], dtype=np.float32)
+    for i in range(0, len(triangle_array), 3):
+        i0, i1, i2 = triangle_array[i:i + 3]
+        p0, p1, p2 = vertex_array[i0], vertex_array[i1], vertex_array[i2]
+        local_surface_area = np.linalg.norm(np.cross(p1 - p0, p2 - p0)) * 0.5
+        surface_areas[i0] += local_surface_area / 3
+        surface_areas[i1] += local_surface_area / 3
+        surface_areas[i2] += local_surface_area / 3
+    return surface_areas
+
+
+@numba.jit
+def ccw_check_kernel(triangle_array, vertex_array, normal_array):
+    for i in range(0, len(triangle_array), 3):
+        i0, i1, i2 = triangle_array[i:i + 3]
+        p0, p1, p2 = vertex_array[i0], vertex_array[i1], vertex_array[i2]
+        n = np.cross(p1 - p0, p2 - p0)
+        if np.dot(n, normal_array[i0]) < 0:
+            triangle_array[i], triangle_array[i + 1] = i1, i0
+
+
 def parse_scene(filename: str):
     with open(filename, 'r') as file:
         scene_data = json.load(file)
@@ -109,37 +143,32 @@ def parse_scene(filename: str):
         reader = tinyobjloader.ObjReader()
         # parse the model to be rendered, add model data to array lists
         offset = 0
-        reader.ParseFromFile(scene_data["render_model"])
+        if not reader.ParseFromFile(scene_data["render_model"]):
+            print("Failed to parse model")
+            exit(0)
+        else:
+            print("Received model data...")
         attrib = reader.GetAttrib()
         global model_vertex_count
         vertex_array = np.array(attrib.vertices, dtype=np.float32).reshape(-1, 3)
         model_vertex_count = vertex_array.shape[0]
         normal_vectors = np.array(attrib.normals, dtype=np.float32).reshape(-1, 3)
-        normal_vectors /= np.linalg.norm(normal_vectors, axis=1).reshape((-1, 1))
-        normal_array = np.empty_like(vertex_array, dtype=np.float32)
-        for shape in reader.GetShapes():
-            for index in shape.mesh.indices:
-                normal_array[index.vertex_index] = normal_vectors[index.normal_index]
-        vertex_arrays.append(vertex_array)
-        normal_arrays.append(normal_array)
+        normal_index_array = np.array([
+            index.normal_index for shape in reader.GetShapes() for index in shape.mesh.indices
+        ], dtype=np.int32)
         triangle_array = np.array([
             index.vertex_index for shape in reader.GetShapes() for index in shape.mesh.indices
         ])
+        normal_array = normal_array_kernel(triangle_array, normal_index_array, normal_vectors, vertex_array.shape[0])
+        normal_array /= np.linalg.norm(normal_array, axis=1).reshape((-1, 1))
+        vertex_arrays.append(vertex_array)
+        normal_arrays.append(normal_array)
         # calculate total surface area of the model
         # also the wrongly wired triangles are re-sorted in this part to support face culling
-        surface_areas = np.zeros((model_vertex_count, 1), dtype=np.float32)
-        for i in range(0, len(triangle_array), 3):
-            i0, i1, i2 = triangle_array[i:i+3]
-            p0, p1, p2 = map(lambda x: vertex_array[x], (i0, i1, i2))
-            local_normal = np.cross(p1 - p0, p2 - p0)
-            average_normal = normal_array[i0] + normal_array[i1] + normal_array[i2]
-            if np.dot(local_normal, average_normal) < 0:
-                triangle_array[i], triangle_array[i + 1] = triangle_array[i + 1], triangle_array[i]
-            local_surface_area = np.linalg.norm(np.cross(p1 - p0, p2 - p0)) * 0.5
-            surface_areas[i0] += local_surface_area / 3
-            surface_areas[i1] += local_surface_area / 3
-            surface_areas[i2] += local_surface_area / 3
+        surface_areas = surface_area_kernel(triangle_array, vertex_array).reshape(-1, 1)
+        ccw_check_kernel(triangle_array, vertex_array, normal_array)
         triangle_arrays.append(triangle_array)
+        print("Model data parsing done...")
         # upload vertex array and normal array to GL
         global vbo, ibo, nbo
         vbo = ctx.buffer(np.hstack((vertex_array, surface_areas)))
@@ -174,7 +203,7 @@ def parse_scene(filename: str):
         if surface_lights:
             surface_light_buffer.copy_from_list(surface_lights)
             surface_light_count = len(surface_lights)
-        direction_lights =\
+        direction_lights = \
             [DeviceDirectionLight(
                 direction=make_float3(*light["direction"]),
                 emission=make_float3(*light("emission"))
@@ -240,7 +269,6 @@ class Parameters(NamedTuple):
 
 
 def calculate_parameters():
-    print(sigma_s, sigma_a, g, eta)
     sigma_s_prime = sigma_s * (1.0 - g)
     sigma_t_prime = sigma_s_prime + sigma_a
     alpha_prime = sigma_s_prime / sigma_t_prime
@@ -254,7 +282,7 @@ def calculate_parameters():
         math.sqrt(3.0 * (1.0 - alpha_prime.x)),
         math.sqrt(3.0 * (1.0 - alpha_prime.y)),
         math.sqrt(3.0 * (1.0 - alpha_prime.z)))
-    )
+          )
     sigma_tr = make_float3(
         math.sqrt(3.0 * (1.0 - alpha_prime.x)),
         math.sqrt(3.0 * (1.0 - alpha_prime.y)),
@@ -271,6 +299,13 @@ def calculate_parameters():
 
 
 @luisa.func
+def fresnel_schlick(c):
+    f0 = (eta - 1.) / (eta + 1.)
+    f0 *= f0
+    return 1. - lerp(f0, 1., pow(max(0., 1. - c), 5.))
+
+
+@luisa.func
 def vertex_influx_kernel(influx):
     acc = make_float3(0.0)
     idx = dispatch_id().x
@@ -282,13 +317,15 @@ def vertex_influx_kernel(influx):
         direction = point_light.position - vertex
         probe_ray = make_ray(offset_ray_origin(vertex, normal), normalize(direction), 1e-2, length(direction))
         if not accel.trace_any(probe_ray):
-            acc += point_light.emission * max(dot(normal, normalize(direction)), 0.0)
+            acc += point_light.emission * max(dot(normal, normalize(direction)), 0.0) * fresnel_schlick(
+                max(0., dot(normal, probe_ray.get_dir())))
     for i in range(direction_light_count):
         direction_light = direction_light_buffer.read(i)
         direction = normalize(-direction_light.direction)
         probe_ray = make_ray(offset_ray_origin(vertex, normal), direction, 1e-2, 1e10)
         if not accel.trace_any(probe_ray):
-            acc += direction_light.emission * max(dot(normal, direction), 0.0)
+            acc += direction_light.emission * max(dot(normal, direction), 0.0) * fresnel_schlick(
+                max(0., dot(normal, direction)))
     sampler = RandomSampler(make_int3(idx))
     for i in range(spp):
         # TODO add light importance sampling to accelerate convergence
@@ -308,7 +345,9 @@ def vertex_influx_kernel(influx):
             n1 = normal_buffer.read(i1)
             n2 = normal_buffer.read(i2)
             n = normalize(hit.interpolate(n0, n1, n2))
-            acc += surface_light.emission * abs(dot(n, direction)) * math.pi / float(spp)
+            cos_light = abs(dot(n, ray.get_dir()))
+            acc += surface_light.emission * fresnel_schlick(
+                max(0., dot(normal, ray.get_dir()))) * cos_light / float(spp)
     influx.write(idx, acc)
 
 
@@ -329,6 +368,7 @@ def linear_to_srgb(x):
 def main():
     res = (1000, 1000)
     camera = Camera(Vector3([0.0, 1.0, 8.0]), Vector3([0.0, 0.5, 0.0]), res, 20.0)
+    print("Starting to parse scene data...")
     parse_scene(sys.argv[1])
     shader = ctx.program(
         vertex_shader=
@@ -494,7 +534,7 @@ def main():
     buffer = bytearray(res[0] * res[1] * 4 * 4)
     render_target.read_into(buffer)
     postfix = sys.argv[1].split('/')[-1].split('\\')[-1].split('.')[0] + '-' + str(equation).lower().split('.')[-1]
-    plt.imsave(f"result-{postfix}.png", np.frombuffer(buffer, dtype=np.float32).reshape(res + (-1,))[::-1, ::-1])
+    plt.imsave(f"result-teaser-dipole.png", np.frombuffer(buffer, dtype=np.float32).reshape(res + (-1,))[::-1, ::-1])
 
 
 if __name__ == "__main__":

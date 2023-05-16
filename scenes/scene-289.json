@@ -1,5 +1,5 @@
 {
-    "render_model": "./resources/objects/3.obj",
+    "render_model": "./resources/objects/4.obj",
     "direction_lights": [],
     "point_lights": [],
     "surface_lights": [
