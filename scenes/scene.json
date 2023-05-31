@@ -1,9 +1,9 @@
 {
-    "render_model": "./resources/objects/4.obj",
+    "render_model": "./resources/objects/13.obj",
     "direction_lights": [
         {
             "emission": [
-                1.0, 1.0, 1.0
+                0.0, 0.0, 0.0
             ],
             "direction": [
                 0.0, 1.0, 0.0
@@ -13,10 +13,10 @@
     "point_lights": [
         {
             "emission": [
-                0.0, 0.0, 0.0
+                1.0, 1.0, 1.0
             ],
             "position": [
-                1.0, 1.0, 1.0
+                0.0, 2.0, 0.0
             ]
         }
     ],

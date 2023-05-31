@@ -359,7 +359,7 @@ def collect_vertex_influx() -> luisa.Buffer:
 
 def main():
     res = (1000, 1000)
-    camera = Camera(Vector3([0.0, 1.0, 8.0]), Vector3([0.0, 0.5, 0.0]), res, 20.0)
+    camera = Camera(Vector3([0.0, 1.0, -10.0]), Vector3([0.0, 0.5, 0.0]), res, 20.0)
     print("Starting to parse scene data...")
     parse_scene(sys.argv[1])
     shader = ctx.program(

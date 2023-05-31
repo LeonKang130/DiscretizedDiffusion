@@ -13,7 +13,7 @@ class Camera(object):
         self.right = self.forward.cross(Vector3([0.0, 1.0, 0.0])).normalised
         self.up = self.right.cross(self.forward)
         self.near = 0.01
-        self.far = 10.0
+        self.far = 100.0
 
     @property
     def mvp(self):
