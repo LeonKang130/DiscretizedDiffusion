@@ -206,7 +206,7 @@ def parse_scene(filename: str):
         direction_lights = \
             [DeviceDirectionLight(
                 direction=make_float3(*light["direction"]),
-                emission=make_float3(*light("emission"))
+                emission=make_float3(*light["emission"])
             ) for light in scene_data["direction_lights"]]
         direction_light_buffer = luisa.Buffer.empty(max(len(direction_lights), 1), dtype=DeviceDirectionLight)
         if direction_lights:
@@ -215,7 +215,7 @@ def parse_scene(filename: str):
         point_lights = \
             [DevicePointLight(
                 position=make_float3(*light["position"]),
-                emission=make_float3(*light("emission"))
+                emission=make_float3(*light["emission"])
             ) for light in scene_data["point_lights"]]
         point_light_buffer = luisa.Buffer.empty(max(len(point_lights), 1), dtype=DevicePointLight)
         if point_lights:
@@ -321,7 +321,7 @@ def vertex_influx_kernel(influx):
                 max(0., dot(normal, probe_ray.get_dir())))
     for i in range(direction_light_count):
         direction_light = direction_light_buffer.read(i)
-        direction = normalize(-direction_light.direction)
+        direction = normalize(direction_light.direction)
         probe_ray = make_ray(offset_ray_origin(vertex, normal), direction, 1e-2, 1e10)
         if not accel.trace_any(probe_ray):
             acc += direction_light.emission * max(dot(normal, direction), 0.0) * fresnel_schlick(
@@ -355,14 +355,6 @@ def collect_vertex_influx() -> luisa.Buffer:
     vertex_influx_buffer = luisa.Buffer.empty(model_vertex_count, float3)
     vertex_influx_kernel(vertex_influx_buffer, dispatch_size=model_vertex_count)
     return vertex_influx_buffer
-
-
-@luisa.func
-def linear_to_srgb(x):
-    return clamp(select(1.055 * x ** (1.0 / 2.4) - 0.055,
-                        12.92 * x,
-                        x <= 0.00031308),
-                 0.0, 1.0)
 
 
 def main():
@@ -534,7 +526,7 @@ def main():
     buffer = bytearray(res[0] * res[1] * 4 * 4)
     render_target.read_into(buffer)
     postfix = sys.argv[1].split('/')[-1].split('\\')[-1].split('.')[0] + '-' + str(equation).lower().split('.')[-1]
-    plt.imsave(f"result-teaser-dipole.png", np.frombuffer(buffer, dtype=np.float32).reshape(res + (-1,))[::-1, ::-1])
+    plt.imsave(f"result-{postfix}.png", np.frombuffer(buffer, dtype=np.float32).reshape(res + (-1,))[::-1, ::-1])
 
 
 if __name__ == "__main__":
