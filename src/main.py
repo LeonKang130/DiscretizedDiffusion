@@ -401,7 +401,7 @@ def main():
     influx_buffer_object = ctx.buffer(
         np.array([
             [flux.x, flux.y, flux.z, 0.0] for flux in influx.to_list()
-        ]).astype(np.float32).tobytes()
+        ]).astype(np.float32)
     )
     print(f"Transferring data took: {(time.time() - start) * 1000} msec")
     start = time.time()
@@ -412,7 +412,7 @@ def main():
         compute_shader = ctx.compute_shader(
             """
                 #version 430 core
-                layout(local_size_x = 1) in;
+                layout(local_size_x = 32) in;
                 layout(std430, binding=0) buffer flux_in
                 {
                     vec4 influx[];
@@ -428,6 +428,7 @@ def main():
                 void main()
                 {
                     int vertex_index = int(gl_GlobalInvocationID);
+                    if (vertex_count <= vertex_index) return;
                     vec3 vertex_position = vertex[vertex_index].xyz;
                     vec3 acc = vec3(0.0);
                     for (int i = 0; i < vertex_count; i++)
@@ -453,7 +454,7 @@ def main():
         compute_shader = ctx.compute_shader(
             """
                 #version 430 core
-                layout(local_size_x = 1) in;
+                layout(local_size_x = 32) in;
                 layout(std430, binding=0) buffer flux_in
                 {
                     vec4 influx[];
@@ -469,6 +470,7 @@ def main():
                 void main()
                 {
                     int vertex_index = int(gl_GlobalInvocationID);
+                    if (vertex_count <= vertex_index) return;
                     vec3 vertex_position = vertex[vertex_index].xyz;
                     vec3 acc = influx[vertex_index].xyz * albedo / (8.0 * 3.1415926);
                     for (int i = 0; i < vertex_count; i++)
@@ -501,7 +503,7 @@ def main():
     influx_buffer_object.bind_to_storage_buffer(0)
     vbo.bind_to_storage_buffer(1)
     efflux_buffer_object.bind_to_storage_buffer(2)
-    compute_shader.run(model_vertex_count)
+    compute_shader.run((model_vertex_count + 31) // 32)
     vao = ctx.vertex_array(
         shader,
         [
