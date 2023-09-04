@@ -529,7 +529,7 @@ def main():
     efflux_buffer_object.bind_to_storage_buffer(2)
     query = ctx.query(time=True)
     with query:
-        compute_shader.run(min((model_vertex_count + 255) // 256, 65536))
+        compute_shader.run(min((model_vertex_count + 255) // 256, 2048))
     print("Compute shader took %d msec" % (query.elapsed / 1000000))
     vao = ctx.vertex_array(
         shader,
