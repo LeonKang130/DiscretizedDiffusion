@@ -168,6 +168,7 @@ def parse_scene(filename: str):
         surface_areas = surface_area_kernel(triangle_array, vertex_array).reshape(-1, 1)
         ccw_check_kernel(triangle_array, vertex_array, normal_array)
         triangle_arrays.append(triangle_array)
+        print("#Vertices: %d" % model_vertex_count)
         print("Model data parsing done...")
         # upload vertex array and normal array to GL
         global vbo, ibo, nbo
@@ -404,7 +405,6 @@ def main():
         ]).astype(np.float32)
     )
     print(f"Transferring data took: {(time.time() - start) * 1000} msec")
-    start = time.time()
     efflux_buffer_object = ctx.buffer(reserve=influx_buffer_object.size)
     parameters = calculate_parameters()
     if equation == Equation.Normalized:
@@ -412,7 +412,9 @@ def main():
         compute_shader = ctx.compute_shader(
             """
                 #version 430 core
-                layout(local_size_x = 32) in;
+                shared vec4 vertex_buffer[256];
+                shared vec4 influx_buffer[256];
+                layout(local_size_x = 256) in;
                 layout(std430, binding=0) buffer flux_in
                 {
                     vec4 influx[];
@@ -427,20 +429,29 @@ def main():
                 };
                 void main()
                 {
-                    int vertex_index = int(gl_GlobalInvocationID);
-                    if (vertex_count <= vertex_index) return;
-                    vec3 vertex_position = vertex[vertex_index].xyz;
-                    vec3 acc = vec3(0.0);
-                    for (int i = 0; i < vertex_count; i++)
-                    {
-                        float r = length(vertex_position - vertex[i].xyz);
-                        r = max(0.02, r);
-                        vec3 a = exp(-r / (3.0 * dmfp));
-                        a = (a + a * a * a) / (8.0 * 3.1415926 * dmfp * r);
-                        acc += influx[i].rgb * a * vertex[i].w;
+                    for (int offset = 0; offset < vertex_count; offset += int(gl_NumWorkGroups.x * gl_WorkGroupSize.x)) {
+                        int vertex_index = int(gl_GlobalInvocationID) + offset;
+                        vec3 vertex_position;
+                        if (vertex_index < vertex_count) vertex_position = vertex[vertex_index].xyz;
+                        vec3 acc = vec3(0.0);
+                        for (int i = 0; i < vertex_count; i += 256)
+                        {
+                            if (gl_LocalInvocationID.x + i < vertex_count) {
+                                vertex_buffer[gl_LocalInvocationID.x] = vertex[gl_LocalInvocationID.x + i];
+                                influx_buffer[gl_LocalInvocationID.x] = influx[gl_LocalInvocationID.x + i];
+                            }
+                            barrier();
+                            for (int j = 0; j < min(vertex_count - i, 256); j++) {
+                                float r = length(vertex_position - vertex_buffer[j].xyz);
+                                r = max(0.02, r);
+                                vec3 a = exp(-r / (3.0 * dmfp));
+                                a = (a + a * a * a) / (8.0 * 3.1415926 * dmfp * r);
+                                acc += influx_buffer[j].rgb * a * vertex_buffer[j].w;
+                            }
+                        }
+                        acc *= albedo * transmittance;
+                        if (vertex_index < vertex_count) efflux[vertex_index] = vec4(acc, 1.0);
                     }
-                    acc *= albedo * transmittance;
-                    efflux[vertex_index] = vec4(acc, 1.0);
                 }
             """
             .replace("vertex_count", f"{model_vertex_count}")
@@ -454,7 +465,9 @@ def main():
         compute_shader = ctx.compute_shader(
             """
                 #version 430 core
-                layout(local_size_x = 32) in;
+                shared vec4 vertex_buffer[256];
+                shared vec4 influx_buffer[256];
+                layout(local_size_x = 256) in;
                 layout(std430, binding=0) buffer flux_in
                 {
                     vec4 influx[];
@@ -469,25 +482,36 @@ def main():
                 };
                 void main()
                 {
-                    int vertex_index = int(gl_GlobalInvocationID);
-                    if (vertex_count <= vertex_index) return;
-                    vec3 vertex_position = vertex[vertex_index].xyz;
-                    vec3 acc = influx[vertex_index].xyz * albedo / (8.0 * 3.1415926);
-                    for (int i = 0; i < vertex_count; i++)
-                    {
-                        float r = length(vertex_position - vertex[i].xyz);
-                        vec3 dr = sqrt(r * r + zr * zr);
-                        vec3 dv = sqrt(r * r + zv * zv);
-                        vec3 weight =
-                            1.0 / (4.0 * 3.1415926) * (
-                                zr * (sigma_tr * dr + 1.0) * exp(-sigma_tr * dr) / (dr * dr * dr) +
-                                zv * (sigma_tr * dv + 1.0) * exp(-sigma_tr * dv) / (dv * dv * dv)
-                            );
-                        weight = any(isnan(weight)) ? vec3(0.0) : weight;
-                        acc += influx[i].rgb * weight * vertex[i].w;
+                    for (int offset = 0; offset < vertex_count; offset += int(gl_NumWorkGroups.x * gl_WorkGroupSize.x)) {
+                        int vertex_index = int(gl_GlobalInvocationID.x) + offset;
+                        vec3 vertex_position, acc;
+                        if (vertex_index < vertex_count) {
+                            vertex_position = vertex[vertex_index].xyz;
+                            acc = influx[vertex_index].xyz * albedo / (8.0 * 3.1415926);
+                        }
+                        for (int i = 0; i < vertex_count; i += 256)
+                        {
+                            if (gl_LocalInvocationID.x + i < vertex_count) {
+                                vertex_buffer[gl_LocalInvocationID.x] = vertex[gl_LocalInvocationID.x + i];
+                                influx_buffer[gl_LocalInvocationID.x] = influx[gl_LocalInvocationID.x + i];
+                            }
+                            barrier();
+                            for (int j = 0; j < min(vertex_count - i, 256); j++) {
+                                float r = length(vertex_position - vertex_buffer[j].xyz);
+                                vec3 dr = sqrt(r * r + zr * zr);
+                                vec3 dv = sqrt(r * r + zv * zv);
+                                vec3 weight =
+                                    1.0 / (4.0 * 3.1415926) * (
+                                        zr * (sigma_tr * dr + 1.0) * exp(-sigma_tr * dr) / (dr * dr * dr) +
+                                        zv * (sigma_tr * dv + 1.0) * exp(-sigma_tr * dv) / (dv * dv * dv)
+                                    );
+                                weight = any(isnan(weight)) ? vec3(0.0) : weight;
+                                acc += influx_buffer[j].rgb * weight * vertex_buffer[j].w;
+                            }
+                        }
+                        acc *= transmittance;
+                        if (vertex_index < vertex_count) efflux[vertex_index] = vec4(acc, 1.0);
                     }
-                    acc *= transmittance;
-                    efflux[vertex_index] = vec4(acc, 1.0);
                 }
             """
             .replace("vertex_count", f"{model_vertex_count}")
@@ -503,7 +527,11 @@ def main():
     influx_buffer_object.bind_to_storage_buffer(0)
     vbo.bind_to_storage_buffer(1)
     efflux_buffer_object.bind_to_storage_buffer(2)
-    compute_shader.run((model_vertex_count + 31) // 32)
+    start = time.time()
+    query = ctx.query(time=True)
+    with query:
+        compute_shader.run(min((model_vertex_count + 255) // 256, 65536))
+    print("Compute shader took %d msec" % (query.elapsed / 1000000))
     vao = ctx.vertex_array(
         shader,
         [
