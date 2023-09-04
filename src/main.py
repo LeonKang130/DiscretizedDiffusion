@@ -527,7 +527,6 @@ def main():
     influx_buffer_object.bind_to_storage_buffer(0)
     vbo.bind_to_storage_buffer(1)
     efflux_buffer_object.bind_to_storage_buffer(2)
-    start = time.time()
     query = ctx.query(time=True)
     with query:
         compute_shader.run(min((model_vertex_count + 255) // 256, 65536))
@@ -552,7 +551,6 @@ def main():
     gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, fbo_msaa.glo)
     gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, fbo.glo)
     gl.glBlitFramebuffer(0, 0, res[0], res[1], 0, 0, res[0], res[1], gl.GL_COLOR_BUFFER_BIT, gl.GL_LINEAR)
-    print(f"Rendering one frame took: {(time.time() - start) * 1000} msec")
     buffer = bytearray(res[0] * res[1] * 4 * 4)
     render_target.read_into(buffer)
     postfix = sys.argv[1].split('/')[-1].split('\\')[-1].split('.')[0] + '-' + str(equation).lower().split('.')[-1]
